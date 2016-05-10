@@ -1,0 +1,568 @@
+#!/bin/bash
+################################################################################
+#                           The MIT License (MIT)                              #
+#                     Copyright (c) 2016 Jean-Yves VET                         #
+#                                                                              #
+# Permission is hereby granted, free of charge, to any person obtaining a copy #
+# of this software and associated documentation files (the "Software"), to     #
+# deal in the Software without restriction, including without limitation the   #
+# rights to use, copy, modify, merge, publish, distribute, sublicense, and/or  #
+# sell copies of the Software, and to permit persons to whom the Software is   #
+# furnished to do so, subject to the following conditions:                     #
+#                                                                              #
+# The above copyright notice and this permission notice shall be included in   #
+# all copies or substantial portions of the Software.                          #
+#                                                                              #
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR   #
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,     #
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE  #
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER       #
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING      #
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS #
+# IN THE SOFTWARE.                                                             #
+#        _____ ______ _   _      _____             _ _   _                     #
+#       /  __ \| ___ \ | | |    /  ___|           (_) | (_)                    #
+#       | /  \/| |_/ / | | |    \ `--.  __ _ _ __  _| |_ _ _______ _ __        #
+#       | |    |  __/| | | |     `--. \/ _` | '_ \| | __| |_  / _ \ '__|       #
+#       | \__/\| |   | |_| |    /\__/ / (_| | | | | | |_| |/ /  __/ |          #
+#        \____/\_|    \___/     \____/ \__,_|_| |_|_|\__|_/___\___|_|          #
+#                                                                              #
+####----[ FULL USAGE ]------------------------------------------------------####
+#% Synopsis:                                                                   #
+#+    {{SC_NAME}} [options...]                                                 #
+#%                                                                             #
+#% Description:                                                                #
+#%    Sanitize cores from activity. Temporaraly migrate processes and threads  #
+#%    on core 0. Might be used to run tests and benchmarks with less           #
+#%    perturbations.                                                           #
+#%                                                                             #
+#% Options:                                                                    #
+#%        --disable-colors             Disable colors.                         #
+#%        --enable-colors, --colors    Enable colors.                          #
+#%    -h, --help                       Print this help.                        #
+#%        --version                    Print script information.               #
+#%                                                                             #
+#% Examples:                                                                   #
+#%                                                                             #
+#%    Use in root to migrate all processes                                     #
+#%    sudo {{SC_NAME}}                                                         #
+#%                                                                             #
+#%    Use with color support                                                   #
+#%    {{SC_NAME}} --colors                                                     #
+#%                                                                             #
+####----[ INFORMATION ]-----------------------------------------------------####
+#% Implementation:                                                             #
+#-    version         0.1                                                      #
+#-    url             https://github.com/jyvet/cpusanitizer                    #
+#-    author          Jean-Yves VET <contact[at]jean-yves.vet>                 #
+#-    copyright       Copyright (c) 2016                                       #
+#-    license         MIT                                                      #
+##################################HEADER_END####################################
+
+
+####----[ PARAMETERS ]------------------------------------------------------####
+
+    ENABLE_COLORS="false"                # Disable colors by default.
+    CORESET="0"                          # Migrate to core 0 by default.
+
+
+####----[ GLOBAL VARIABLES ]------------------------------------------------####
+
+    readonly SC_HSIZE=$(head -n99 "${0}" | grep -m1 -n "#HEADER_END#" |
+                        cut -f1 -d:)     # Compute header size
+    readonly SC_DIR=$(cd "$( dirname "${BASH_SOURCE[0]}" )" &&
+                        pwd)             # Retrieve path where script is located
+    readonly SC_NAME=$(basename ${0})    # Retrieve name of the script
+    readonly SC_PID=$(echo $$)           # Retrieve PID of the script
+
+
+####----[ ERRORS ]----------------------------------------------------------####
+
+    # Generate error codes (emulate enum)
+    ECODES=(OK ERROR EINVOPT ECMD EINVNUM)
+    for i in $(seq 0 $((${#ECODES[@]} -1 ))); do
+        declare -r ${ECODES[$(($i))]}=$i;
+    done
+
+    # Register error messages
+    ERRORS[$EINVOPT]="invalid option."
+    ERRORS[$ECMD]="\$CMD not found. Please install the '\$PACKAGE' package."
+    ERRORS[$EINVNUM]="invalid number of arguments."
+
+
+####----[ WARNINGS ]--------------------------------------------------------####
+
+    # Register warning messages
+    declare -A WARNINGS
+    WARNINGS['not_root']="not root, only processes own by user will be moved."
+
+
+####----[ GENERIC FUNCTIONS ]-----------------------------------------------####
+
+    ############################################################################
+    # Replace tags with content of variables.                                  #
+    # Args:                                                                    #
+    #      -$1: Input text.                                                    #
+    #      -$2: Output variable where to store the resulting text.             #
+    #      -$3: Start of the tag.                                              #
+    #      -$4: End of the tag.                                                #
+    # Result: store the resulting text in the variable defined by $2.          #
+	tags_replace()
+	{
+        # Check number of input arguments
+        if [[ "$#" -ne 4 ]]; then
+            print_error $EINVNUM; return $?
+        fi
+
+		# Extract arguments
+        local in="$1"
+        local out="$2"
+        local stag="$3"
+        local etag="$4"
+
+		# Search list of tags to replace
+        local varList=$(echo "$in" | egrep -o "$stag[0-9A-Za-z_-]*$etag" |
+                        sort -u | sed -e "s/^$stag//" -e "s/$etag$//")
+
+        local res="$in"
+
+        # Check if there are some tags to replace
+        if [[ -n "$varList" ]]; then
+            # Generate sed remplacement string
+            sedOpts=''
+            for var in $varList; do
+                eval "value=\${${var}}"
+                sedOpts="${sedOpts} -e 's#$stag${var}$etag#${value}#g'"
+            done
+
+            res=$(eval "echo -e \"\$in\" | sed $sedOpts")
+        fi
+
+        # Store resulting string in the output variable
+        eval "$out=\"$res\""
+	}
+
+    ############################################################################
+    # Remove all tags contained in a text.                                     #
+    # Args:                                                                    #
+    #      -$1: Input text.                                                    #
+    #      -$2: Output variable where to store the resulting text.             #
+    #      -$3: Start of the tag.                                              #
+    #      -$4: End of the tag.                                                #
+    # Result: store the resulting text in the variable defined by $2.          #
+    tags_remove()
+    {
+        # Check number of input arguments
+        if [[ "$#" -ne 4 ]]; then
+            print_error $EINVNUM; return $?
+        fi
+
+		# Extract arguments
+        local in="$1"
+        local out="$2"
+        local stag="$3"
+        local etag="$4"
+
+        # Remove tags
+        local res="$(echo "$in" | sed -e "s#$stag[A-Za-z0-9_]*$etag##g")"
+
+        # Store resulting string in the output variable
+        eval "$out=\"$res\""
+    }
+
+    ############################################################################
+    # Replace tags in a text with the content of variables.                    #
+    # Args:                                                                    #
+    #      -$1: Input text.                                                    #
+    #      -$2: Output variable where to store the resulting text or output    #
+    #           the content. ($2='var_name', $2='stdout' or $2='stderr')       #
+    # Result: store or output the resulting text.                              #
+	tags_replace_txt()
+    {
+        # Check number of input arguments
+        if [[ "$#" -ne 2 ]]; then
+            print_error $EINVNUM; return $?
+        fi
+
+		# Extract arguments
+        local in="$1"
+        local out="$2"
+
+        # Replace all tags defined by {{TAG_NAME}}
+        tags_replace "$in" "$out" '{{' '}}'
+
+        # Check if the resulting string has to be printed in stderr or stdout
+		case "$out" in
+		    stdout)
+                eval "echo -e \"\$$out\""
+		     	;;
+			stderr)
+                eval "echo -e \"\$$out\"" 1>&2
+                ;;
+		esac
+    }
+
+    ############################################################################
+    # Print text with colors if colors are enables.                            #
+    # Args:                                                                    #
+    #      -$1: Input text.                                                    #
+    #      -$*: Other arguments for printf function.                           #
+    # Result: print resulting string in stdout.                                #
+	print_colors()
+	{
+        # Check number of input arguments
+        if [[ "$#" -lt 1 ]]; then
+            print_error $EINVNUM; return $?
+        fi
+
+        # Extract argument
+        local in="$1<normal>"
+
+        # Shift arguments
+        shift
+
+        # Check if colors are enabled and prepare output string
+        if [[ "$ENABLE_COLORS" == "true" ]]; then
+            # End tags
+            local normal='$(tput sgr0)'
+            local black="$normal"
+            local red="$normal"
+            local green="$normal"
+            local yellow="$normal"
+            local blue="$normal"
+            local magenta="$normal"
+            local cyan="$normal"
+            local white="$normal"
+            local b="$normal"
+            local i='$(tput ritm)'
+            local u='$(tput rmul)'
+            tags_replace "$in" 'OUT' '<\/' '>'
+
+            # Start tags
+            black='$(tput setaf 0)'
+            red='$(tput setaf 1)'
+            green='$(tput setaf 2)'
+            yellow='$(tput setaf 3)'
+            blue='$(tput setaf 4)'
+            magenta='$(tput setaf 5)'
+            cyan='$(tput setaf 6)'
+            white='$(tput setaf 7)'
+            b='$(tput bold)'
+            i='$(tput sitm)'
+            u='$(tput smul)'
+            tags_replace "$OUT" 'OUT' '<' '>'
+        else
+            tags_remove "$in" 'OUT' '</' '>'
+            tags_remove "$OUT" 'OUT' '<' '>'
+        fi
+
+        # Print string to stdout
+        printf "$OUT" $*
+	}
+
+    ############################################################################
+    # Print error in stderr.                                                   #
+    # Args:                                                                    #
+    #      -$1: Error code.                                                    #
+    # Result: print error and return error code.                               #
+    print_error()
+    {
+        # Extract argument
+        local error_code="$1"
+
+        # Get error description
+        eval "msg=\"${ERRORS[${error_code}]}\""
+
+        # Print the error message
+        print_colors "<red><b>Error:</b></red> <red>$msg</red>\n" 1>&2
+
+        # Return the corresponding error code
+        return "-$error_code"
+    }
+
+    ############################################################################
+    # Print warning in stderr.                                                 #
+    # Args:                                                                    #
+    #      -$1: Warning code.                                                  #
+    # Result: print warning.                                                   #
+    print_warning()
+    {
+        # Extract argument
+        local warning_code="$1"
+
+        # Get warning description
+        eval "msg=\"${WARNINGS[${warning_code}]}\""
+
+        # Print the warning message
+        print_colors "<red><b>Warning:</b></red> <red>$msg</red>\n" 1>&2
+    }
+
+    ############################################################################
+    # Print usage.                                                             #
+    # Args:                                                                    #
+    #       None                                                               #
+    # Result: print short usage message.                                       #
+    usage()
+    {
+        print_colors "<b>Usage:</b> "
+        local tmp=$(head -n${SC_HSIZE:-99} "${0}" | grep -e "^#+" |
+                   sed -e "s/^#+[ ]*//g" -e "s/#$//g")
+
+        tags_replace_txt "$tmp" 'stdout'
+    }
+
+    ############################################################################
+    # Print information related to development.                                #
+    # Args:                                                                    #
+    #       None                                                               #
+    # Result: print version and contact information.                           #
+    info()
+    {
+        local tmp=$(head -n${SC_HSIZE:-99} "${0}" | grep -e "^#-" |
+                        sed -e "s/^#-//g" -e "s/#$//g" -e "s/\[at\]/@/g")
+
+        tags_replace_txt "$tmp" 'stdout'
+    }
+
+    ############################################################################
+    # Print full detailled usage.                                              #
+    # Args:                                                                    #
+    #       None                                                               #
+    # Result: print help.                                                      #
+    usage_full()
+    {
+        local tmp=$(head -n${SC_HSIZE:-99} "${0}" | grep -e "^#[%+]" |
+                       sed -e "s/^#[%+-]//g" -e "s/#$//g")
+
+        tags_replace_txt "$tmp" 'stdout'
+
+        info
+    }
+
+    ############################################################################
+    # Check if the current user is root.                                       #
+    # Args:                                                                    #
+    #       None                                                               #
+    # Result: set global variable IS_ROOT.                                     #
+    is_root()
+    {
+    	if [[ "root" != "$( whoami )" ]]; then
+            IS_ROOT="false"
+            print_warning 'not_root'
+        else
+            IS_ROOT="true"
+        fi
+    }
+
+    ############################################################################
+    # Check arguments.                                                         #
+    # Args:                                                                    #
+    #       All arguments provided.                                            #
+    # Result: check if arguments are allowed and set global variables.         #
+    check_arguments()
+    {
+        # Translate arguments to short options
+        for arg in $*; do
+            local delim=""
+            case "$arg" in
+                --colors)          ENABLE_COLORS="true";;
+                --enable-colors)   ENABLE_COLORS="true";;
+                --disable-colors)  ENABLE_COLORS="false";;
+                --help)            args="${args}-h ";;
+                --version)         info; exit 0;;
+                *) [[ "${arg:0:1}" == "-" ]] || delim="\""
+                    args="${args}${delim}${arg}${delim} ";;
+            esac
+        done
+
+        # Reset the positional parameters to the short options
+        eval set -- $args
+
+        # Available options
+        local options="c:h"
+
+        # Desactivate error handling by getops
+        OPTERR=0
+
+        # Parse arguments
+        while getopts $options OPT; do
+            case "$OPT" in
+                h)  usage_full; exit 0;;
+                \?) print_error $EINVOPT; usage; return $EINVOPT;;
+            esac
+        done
+    }
+
+    ############################################################################
+    # Check if the tool is installed and the command is working on the system. #
+    # Args:                                                                    #
+    #       -$1: command to check.                                             #
+    #       -$2: package name.                                                 #
+    # Result: display an error and return error code ECMD if not installed.    #
+    check_cmd()
+    {
+        # Check number of input arguments
+        if [[ "$#" -ne 2 ]]; then
+            print_error $EINVNUM; return $?
+        fi
+
+        # Extract parameters
+        local cmd="$1"
+        local package="$2"
+
+        # Check if command works
+        command -v $cmd >/dev/null 2>&1 ||
+        {
+            # Set variables for error message
+            CMD=$cmd
+            PACKAGE=$package
+
+            # Print error message and return error code
+            print_error $ECMD;
+            return $?
+        }
+
+        return $OK
+    }
+
+
+####----[ FUNCTIONS ]-------------------------------------------------------####
+
+    ############################################################################
+    # Check if all dependencies are satisfied.                                 #
+    # Args:                                                                    #
+    #       None                                                               #
+    # Result: return error code if one package is missing.                     #
+    check_dependencies()
+    {
+        local res=$OK
+
+        # Check taskset for processes migration
+        check_cmd 'taskset' 'taskset' || res=$?
+
+        # Check tput for colors management
+        if [[ "$ENABLE_COLORS" == 'true' ]]; then
+            check_cmd 'tput' 'ncurses' || res=$?
+        fi
+
+        return $res
+    }
+
+    ############################################################################
+    # Get a list of active PIDS.                                               #
+    # Args:                                                                    #
+    #       None                                                               #
+    # Result: get the list in the PIDS global variable, update count.          #
+    pids_retrieve()
+    {
+        # Check if all PIDs might be migrated
+        if [[ "$IS_ROOT" == "true" ]]; then
+            PIDS=$(ps haxo pid,cmd | sed "s/^ *//g" | cut -f1 -d" " | xargs)
+        else
+            PIDS=$(ps hao pid,cmd | sed "s/^ *//g" | cut -f1 -d" " | xargs)
+        fi
+
+        # Count PIDs
+        NB_PIDS=$(echo $PIDS | wc -w)
+    }
+
+    ############################################################################
+    # Backup coremask affinity of each PID.                                    #
+    # Args:                                                                    #
+    #       None                                                               #
+    # Result: backup in AFFINITIES global variable and update PIDs list.       #
+    pids_backup_affinities()
+    {
+        local pids=""
+        local count=0
+
+        # Check if affinity array has already been declared
+        if [[ -z "$AFFINITIES" ]]; then
+            declare -A AFFINITIES
+        fi
+
+        # Check if PID still active and backup affinity
+        for i in $PIDS; do
+            local pid=$(taskset -p $i 2>/dev/null)
+            if [[ "$?" -eq 0 ]]; then
+                AFFINITIES["$i"]=$(echo $pid | sed 's/ //g' | cut -f2 -d':')
+                pids="$pids $i"
+            fi
+        done
+
+        # Remove unaccessible PIDs from the list
+        PIDS=$pids
+
+        # Count PIDs
+        NB_PIDS=$(echo $PIDS | wc -w)
+    }
+
+    ############################################################################
+    # Migrate processes and threads.                                           #
+    # Args:                                                                    #
+    #       None                                                               #
+    # Result: move processes and their threads to core 0.                      #
+    pids_migrate()
+    {
+        # Migrate all processes in the PIDS list
+        for i in $PIDS; do
+            taskset -a -pc $CORESET $i > /dev/null 2>&1
+        done
+    }
+
+    ############################################################################
+    # Move back processes and threads to their previous coremask affinity.     #
+    # Args:                                                                    #
+    #       None                                                               #
+    # Result: restore affinities.                                              #
+	pids_restore()
+	{
+        # Restore affinity of each PID which is still active
+        for i in $PIDS; do
+            if [[ -n "${AFFINITIES[$i]}" ]]; then
+                taskset -a -p ${AFFINITIES[$i]} $i > /dev/null 2>&1
+            fi
+        done
+	}
+
+    ############################################################################
+    # Keep the script active.                                                  #
+    # Args:                                                                    #
+    #       None                                                               #
+    # Result: loop until the script is explicitely exited.                     #
+    wait_exit()
+    {
+        while :
+        do
+            sleep 100
+        done
+    }
+
+
+####----[ MAIN ]------------------------------------------------------------####
+
+if [[ -z "$SPASS_ENABLE_TESTS" ]]; then  # Disable main if unit testing
+    # Retrive and check all provided arguments
+    check_arguments $* || exit $?
+
+    # Check if necessary packages are available
+    check_dependencies || exit $?
+
+    # Check if run as root
+    is_root
+
+    # Retrieve list of PIDs
+    pids_retrieve
+
+    # Keep track of previous affinity
+    pids_backup_affinities
+
+    # Trap to restore PIDs on exit
+	trap pids_restore EXIT
+
+    # Migrate PIDs
+    pids_migrate
+
+    # Keep migration active until exit
+    wait_exit
+fi
