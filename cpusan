@@ -107,20 +107,20 @@
     #      -$3: Start of the tag.                                              #
     #      -$4: End of the tag.                                                #
     # Result: store the resulting text in the variable defined by $2.          #
-	tags_replace()
-	{
+    tags_replace()
+    {
         # Check number of input arguments
         if [[ "$#" -ne 4 ]]; then
             print_error $EINVNUM; return $?
         fi
 
-		# Extract arguments
+        # Extract arguments
         local in="$1"
         local out="$2"
         local stag="$3"
         local etag="$4"
 
-		# Search list of tags to replace
+        # Search list of tags to replace
         local varList=$(echo "$in" | egrep -o "$stag[0-9A-Za-z_-]*$etag" |
                         sort -u | sed -e "s/^$stag//" -e "s/$etag$//")
 
@@ -140,7 +140,7 @@
 
         # Store resulting string in the output variable
         eval "$out=\"$res\""
-	}
+    }
 
     ############################################################################
     # Remove all tags contained in a text.                                     #
@@ -157,7 +157,7 @@
             print_error $EINVNUM; return $?
         fi
 
-		# Extract arguments
+        # Extract arguments
         local in="$1"
         local out="$2"
         local stag="$3"
@@ -177,14 +177,14 @@
     #      -$2: Output variable where to store the resulting text or output    #
     #           the content. ($2='var_name', $2='stdout' or $2='stderr')       #
     # Result: store or output the resulting text.                              #
-	tags_replace_txt()
+    tags_replace_txt()
     {
         # Check number of input arguments
         if [[ "$#" -ne 2 ]]; then
             print_error $EINVNUM; return $?
         fi
 
-		# Extract arguments
+        # Extract arguments
         local in="$1"
         local out="$2"
 
@@ -192,14 +192,14 @@
         tags_replace "$in" "$out" '{{' '}}'
 
         # Check if the resulting string has to be printed in stderr or stdout
-		case "$out" in
-		    stdout)
+        case "$out" in
+            stdout)
                 eval "echo -e \"\$$out\""
-		     	;;
-			stderr)
+                ;;
+            stderr)
                 eval "echo -e \"\$$out\"" 1>&2
                 ;;
-		esac
+        esac
     }
 
     ############################################################################
@@ -208,8 +208,8 @@
     #      -$1: Input text.                                                    #
     #      -$*: Other arguments for printf function.                           #
     # Result: print resulting string in stdout.                                #
-	print_colors()
-	{
+    print_colors()
+    {
         # Check number of input arguments
         if [[ "$#" -lt 1 ]]; then
             print_error $EINVNUM; return $?
@@ -258,7 +258,7 @@
 
         # Print string to stdout
         printf "$OUT" $*
-	}
+    }
 
     ############################################################################
     # Print error in stderr.                                                   #
@@ -346,7 +346,7 @@
     # Result: set global variable IS_ROOT.                                     #
     is_root()
     {
-    	if [[ "root" != "$( whoami )" ]]; then
+        if [[ "root" != "$( whoami )" ]]; then
             IS_ROOT="false"
             print_warning 'not_root'
         else
@@ -515,15 +515,15 @@
     # Args:                                                                    #
     #       None                                                               #
     # Result: restore affinities.                                              #
-	pids_restore()
-	{
+    pids_restore()
+    {
         # Restore affinity of each PID which is still active
         for i in $PIDS; do
             if [[ -n "${AFFINITIES[$i]}" ]]; then
                 taskset -a -p ${AFFINITIES[$i]} $i > /dev/null 2>&1
             fi
         done
-	}
+    }
 
     ############################################################################
     # Keep the script active.                                                  #
@@ -558,7 +558,7 @@ if [[ -z "$SPASS_ENABLE_TESTS" ]]; then  # Disable main if unit testing
     pids_backup_affinities
 
     # Trap to restore PIDs on exit
-	trap pids_restore EXIT
+    trap pids_restore EXIT
 
     # Migrate PIDs
     pids_migrate
