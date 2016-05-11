@@ -16,12 +16,17 @@ Running CPU Sanitizer
     % cpusan [options...]
 
 
-Example
--------
+Examples
+--------
 
-Use in root to migrate all processes:
+Migrate all processes on core 0 and 8:
+
+    sudo cpusan -c 0,8
+
+Migrate all processes on core 0:
+
     sudo cpusan
 
 Use with color support:
 
-    cpusan --colors
+    sudo cpusan --colors

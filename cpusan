@@ -37,6 +37,7 @@
 #%    perturbations.                                                           #
 #%                                                                             #
 #% Options:                                                                    #
+#%    -c, --coreset=<list>             Core set list (default: {{CORESET}}).   #
 #%        --disable-colors             Disable colors.                         #
 #%        --enable-colors, --colors    Enable colors.                          #
 #%    -h, --help                       Print this help.                        #
@@ -44,15 +45,18 @@
 #%                                                                             #
 #% Examples:                                                                   #
 #%                                                                             #
-#%    Use in root to migrate all processes                                     #
+#%    Use in root to migrate all processes on core 0 and 8                     #
+#%    sudo {{SC_NAME}} -c 0,8                                                  #
+#%                                                                             #
+#%    Use in root to migrate all processes on core {{CORESET}}                 #
 #%    sudo {{SC_NAME}}                                                         #
 #%                                                                             #
 #%    Use with color support                                                   #
-#%    {{SC_NAME}} --colors                                                     #
+#%    sudo {{SC_NAME}} --colors                                                #
 #%                                                                             #
 ####----[ INFORMATION ]-----------------------------------------------------####
 #% Implementation:                                                             #
-#-    version         0.1                                                      #
+#-    version         0.2                                                      #
 #-    url             https://github.com/jyvet/cpusanitizer                    #
 #-    author          Jean-Yves VET <contact[at]jean-yves.vet>                 #
 #-    copyright       Copyright (c) 2016                                       #
@@ -233,16 +237,24 @@
             local magenta="$normal"
             local cyan="$normal"
             local white="$normal"
+            local orange="$normal"
             local b="$normal"
             local i='$(tput ritm)'
             local u='$(tput rmul)'
             tags_replace "$in" 'OUT' '<\/' '>'
 
             # Start tags
+            if [[ $(tput colors) -ge 256 ]] 2>/dev/null; then
+                yellow='$(tput setaf 190)'
+                orange='$(tput setaf 172)'
+            else
+                yellow='$(tput setaf 3)'
+                orange='$(tput setaf 3)'
+            fi
+
             black='$(tput setaf 0)'
             red='$(tput setaf 1)'
             green='$(tput setaf 2)'
-            yellow='$(tput setaf 3)'
             blue='$(tput setaf 4)'
             magenta='$(tput setaf 5)'
             cyan='$(tput setaf 6)'
@@ -294,7 +306,25 @@
         eval "msg=\"${WARNINGS[${warning_code}]}\""
 
         # Print the warning message
-        print_colors "<red><b>Warning:</b></red> <red>$msg</red>\n" 1>&2
+        print_colors "<orange><b>Warning:</b></orange> <orange>$msg</orange>\n"
+                                                                           1>&2
+    }
+
+    ############################################################################
+    # Print info in stdout.                                                    #
+    # Args:                                                                    #
+    #      -$1: Warning code.                                                  #
+    # Result: print warning.                                                   #
+    print_info()
+    {
+        # Extract argument
+        local msg="$1"
+
+        # Shift arguments
+        shift
+
+        # Print the warning message
+        print_colors "<yellow><b>Info:</b></yellow> <yellow>$msg</yellow>\n" $*
     }
 
     ############################################################################
@@ -366,6 +396,8 @@
             local delim=""
             case "$arg" in
                 --colors)          ENABLE_COLORS="true";;
+                --coreset=*)       args="${args}-c $(echo "$arg" |
+                                        sed 's/--.*=//g') ";;
                 --enable-colors)   ENABLE_COLORS="true";;
                 --disable-colors)  ENABLE_COLORS="false";;
                 --help)            args="${args}-h ";;
@@ -387,6 +419,7 @@
         # Parse arguments
         while getopts $options OPT; do
             case "$OPT" in
+                c)  CORESET=$OPTARG;;
                 h)  usage_full; exit 0;;
                 \?) print_error $EINVOPT; usage; return $EINVOPT;;
             esac
@@ -508,6 +541,9 @@
         for i in $PIDS; do
             taskset -a -pc $CORESET $i > /dev/null 2>&1
         done
+
+        print_info "temporarly migrated %d processes on core set %s" \
+                   $NB_PIDS $CORESET
     }
 
     ############################################################################
@@ -523,6 +559,8 @@
                 taskset -a -p ${AFFINITIES[$i]} $i > /dev/null 2>&1
             fi
         done
+
+        print_info "restored affinity of %d processes" $NB_PIDS
     }
 
     ############################################################################
@@ -536,6 +574,8 @@
         do
             sleep 100
         done
+
+        exit 0
     }
 
 
