@@ -495,7 +495,74 @@
     }
 
     ############################################################################
-    # Get a list of active PIDS.                                               #
+    # Check the process with the given PID is still active.                    #
+    # Args:                                                                    #
+    #       -$1: command to check.                                             #
+    # Result: return error if the process is not running.                      #
+    pid_is_active()
+    {
+        # Check number of input arguments
+        if [[ "$#" -ne 1 ]]; then
+            print_error $EINVNUM; return $?
+        fi
+
+        # Extract argument
+        local pid="$1"
+
+        # Retrieve current list of pids
+        local all_pids=$(ps haxo pid,cmd | sed "s/^ *//g" | cut -f1 -d" ")
+
+        # Check if pid is in the list
+        echo -e "$all_pids" | grep -o "^$pid$" > /dev/null 2>&1
+
+        return $?
+    }
+
+    ############################################################################
+    # Count PIDs in the list.                                                  #
+    # Args:                                                                    #
+    #       None                                                               #
+    # Result: update NB_PIDS variable.                                         #
+    pids_count()
+    {
+        if [[ -n "$PIDS" ]]; then
+            NB_PIDS=$(echo "$PIDS" | wc -w)
+        fi
+    }
+
+    ############################################################################
+    # Refresh list of PIDs.                                                     #
+    # Args:                                                                    #
+    #       None                                                               #
+    # Result: remove from the list PIDs which are not active anymore.          #
+    pids_refresh()
+    {
+        if [[ -n "$PIDS" ]]; then
+            local pids=""
+
+            for i in $PIDS; do
+                # Check if the process is still active
+
+                pid_is_active "$i"
+                if [[ "$?" -eq 0 ]]; then
+                    pids="$pids $i"
+                else
+                    if [[ -n "${AFFINITIES[$i]}" ]]; then
+                        unset ${AFFINITIES[$i]}
+                    fi
+                fi
+            done
+
+            # Remove unaccessible PIDs from the list
+            PIDS="$pids"
+
+            # Count PIDs
+            pids_count
+        fi
+    }
+
+    ############################################################################
+    # Get a list of active PIDs.                                               #
     # Args:                                                                    #
     #       None                                                               #
     # Result: get the list in the PIDS global variable, update count.          #
@@ -503,13 +570,19 @@
     {
         # Check if all PIDs might be migrated
         if [[ "$IS_ROOT" == "true" ]]; then
-            PIDS=$(ps haxo pid,cmd | sed "s/^ *//g" | cut -f1 -d" " | xargs)
+            PS=$(ps haxo pid,cmd)
         else
-            PIDS=$(ps hao pid,cmd | sed "s/^ *//g" | cut -f1 -d" " | xargs)
+            PS=$(ps hao pid,cmd)
         fi
 
+        # Exclude ps process
+        PS=$(echo -e "$PS" | grep -v "ps hao pid,cmd")
+
+        # Get a list of PIDs
+        PIDS=$(echo -e "$PS" | sed "s/^ *//g" | cut -f1 -d" " | xargs)
+
         # Count PIDs
-        NB_PIDS=$(echo $PIDS | wc -w)
+        pids_count
     }
 
     ############################################################################
@@ -527,20 +600,24 @@
             declare -A AFFINITIES
         fi
 
-        # Check if PID still active and backup affinity
-        for i in $PIDS; do
-            local pid=$(taskset -p $i 2>/dev/null)
-            if [[ "$?" -eq 0 ]]; then
-                AFFINITIES["$i"]=$(echo $pid | sed 's/ //g' | cut -f2 -d':')
-                pids="$pids $i"
-            fi
-        done
+        # Check if the list of PIDs is not empty
+        if [[ -n "$PIDS" ]]; then
 
-        # Remove unaccessible PIDs from the list
-        PIDS=$pids
+            # Check if PID still active and backup affinity
+            for i in $PIDS; do
+                local pid=$(taskset -p $i 2>/dev/null)
+                if [[ "$?" -eq 0 ]]; then
+                    AFFINITIES["$i"]=$(echo $pid | sed 's/ //g' | cut -f2 -d':')
+                    pids="$pids $i"
+                fi
+            done
 
-        # Count PIDs
-        NB_PIDS=$(echo $PIDS | wc -w)
+            # Remove unaccessible PIDs from the list
+            PIDS="$pids"
+
+            # Count PIDs
+            pids_count
+        fi
     }
 
     ############################################################################
@@ -566,6 +643,9 @@
     # Result: restore affinities.                                              #
     pids_restore()
     {
+        # Refresh list of PIDS and check if they are still active
+        pids_refresh
+
         # Restore affinity of each PID which is still active
         for i in $PIDS; do
             if [[ -n "${AFFINITIES[$i]}" ]]; then
