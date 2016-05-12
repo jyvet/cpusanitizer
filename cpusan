@@ -41,6 +41,7 @@
 #%        --disable-colors             Disable colors.                         #
 #%        --enable-colors, --colors    Enable colors.                          #
 #%    -h, --help                       Print this help.                        #
+#%    -s, --silent                     Do not print anything.                  #
 #%        --version                    Print script information.               #
 #%                                                                             #
 #% Examples:                                                                   #
@@ -282,13 +283,17 @@
         # Extract argument
         local error_code="$1"
 
-        # Get error description
-        eval "msg=\"${ERRORS[${error_code}]}\""
+        # Check if output is not muted
+        if [[ -z "$SILENT" ]]; then
+            # Get error description
+            eval "msg=\"${ERRORS[${error_code}]}\""
 
-        # Print the error message
-        print_colors "<red><b>Error:</b></red> <red>$msg</red>\n" 1>&2
+            # Print the error message
+            print_colors "<red><b>Error:</b></red> <red>$msg</red>\n" 1>&2
 
-        # Return the corresponding error code
+            # Return the corresponding error code
+        fi
+
         return "-$error_code"
     }
 
@@ -299,15 +304,18 @@
     # Result: print warning.                                                   #
     print_warning()
     {
-        # Extract argument
-        local warning_code="$1"
+        # Check if output is not muted
+        if [[ -z "$SILENT" ]]; then
+            # Extract argument
+            local warning_code="$1"
 
-        # Get warning description
-        eval "msg=\"${WARNINGS[${warning_code}]}\""
+            # Get warning description
+            eval "msg=\"${WARNINGS[${warning_code}]}\""
 
-        # Print the warning message
-        print_colors "<orange><b>Warning:</b></orange> <orange>$msg</orange>\n"
+            # Print the warning message
+            print_colors "<orange><b>Warning:</b></orange> <orange>$msg</orange>\n"
                                                                            1>&2
+        fi
     }
 
     ############################################################################
@@ -317,14 +325,17 @@
     # Result: print warning.                                                   #
     print_info()
     {
-        # Extract argument
-        local msg="$1"
+        # Check if output is not muted
+        if [[ -z "$SILENT" ]]; then
+            # Extract argument
+            local msg="$1"
 
-        # Shift arguments
-        shift
+            # Shift arguments
+            shift
 
-        # Print the warning message
-        print_colors "<yellow><b>Info:</b></yellow> <yellow>$msg</yellow>\n" $*
+            # Print the warning message
+            print_colors "<yellow><b>Info:</b></yellow> <yellow>$msg</yellow>\n" $*
+        fi
     }
 
     ############################################################################
@@ -398,9 +409,10 @@
                 --colors)          ENABLE_COLORS="true";;
                 --coreset=*)       args="${args}-c $(echo "$arg" |
                                         sed 's/--.*=//g') ";;
-                --enable-colors)   ENABLE_COLORS="true";;
                 --disable-colors)  ENABLE_COLORS="false";;
+                --enable-colors)   ENABLE_COLORS="true";;
                 --help)            args="${args}-h ";;
+                --silent)          args="${args}-s ";;
                 --version)         info; exit 0;;
                 *) [[ "${arg:0:1}" == "-" ]] || delim="\""
                     args="${args}${delim}${arg}${delim} ";;
@@ -411,7 +423,7 @@
         eval set -- $args
 
         # Available options
-        local options="c:h"
+        local options="c:hs"
 
         # Desactivate error handling by getops
         OPTERR=0
@@ -421,6 +433,7 @@
             case "$OPT" in
                 c)  CORESET=$OPTARG;;
                 h)  usage_full; exit 0;;
+                s)  SILENT="true";;
                 \?) print_error $EINVOPT; usage; return $EINVOPT;;
             esac
         done
