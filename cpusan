@@ -42,6 +42,7 @@
 #%        --enable-colors, --colors    Enable colors.                          #
 #%    -h, --help                       Print this help.                        #
 #%    -s, --silent                     Do not print anything.                  #
+#%    -v, -vv, -vvv                    Verbosity.                              #
 #%        --version                    Print script information.               #
 #%                                                                             #
 #% Examples:                                                                   #
@@ -57,7 +58,7 @@
 #%                                                                             #
 ####----[ INFORMATION ]-----------------------------------------------------####
 #% Implementation:                                                             #
-#-    version         0.2                                                      #
+#-    version         0.3                                                      #
 #-    url             https://github.com/jyvet/cpusanitizer                    #
 #-    author          Jean-Yves VET <contact[at]jean-yves.vet>                 #
 #-    copyright       Copyright (c) 2016                                       #
@@ -67,8 +68,8 @@
 
 ####----[ PARAMETERS ]------------------------------------------------------####
 
-    ENABLE_COLORS="false"                # Disable colors by default.
-    CORESET="0"                          # Migrate to core 0 by default.
+    ENABLE_COLORS='false'                # Disable colors by default.
+    CORESET='0'                          # Migrate to core 0 by default.
 
 
 ####----[ GLOBAL VARIABLES ]------------------------------------------------####
@@ -79,6 +80,8 @@
                         pwd)             # Retrieve path where script is located
     readonly SC_NAME=$(basename ${0})    # Retrieve name of the script
     readonly SC_PID=$(echo $$)           # Retrieve PID of the script
+    declare -A AFFINITIES                # Store coreset affinities
+    declare -A PROCESSES                 # Store names of all processes
 
 
 ####----[ ERRORS ]----------------------------------------------------------####
@@ -90,16 +93,16 @@
     done
 
     # Register error messages
-    ERRORS[$EINVOPT]="invalid option."
-    ERRORS[$ECMD]="\$CMD not found. Please install the '\$PACKAGE' package."
-    ERRORS[$EINVNUM]="invalid number of arguments."
+    ERRORS[$EINVOPT]='invalid option'
+    ERRORS[$ECMD]='$CMD not found. Please install the $PACKAGE package'
+    ERRORS[$EINVNUM]='invalid number of arguments'
 
 
 ####----[ WARNINGS ]--------------------------------------------------------####
 
     # Register warning messages
     declare -A WARNINGS
-    WARNINGS['not_root']="not root, only processes own by user will be moved."
+    WARNINGS['not_root']='not root, only processes own by user will be moved'
 
 
 ####----[ GENERIC FUNCTIONS ]-----------------------------------------------####
@@ -208,6 +211,42 @@
     }
 
     ############################################################################
+    # Enable colors and check color depth.                                     #
+    # Args:                                                                    #
+    #       None                                                               #
+    # Result: set global variable if color support may be turned on.           #
+    enable_colors()
+    {
+        ENABLE_COLORS='false'
+
+        check_cmd 'tput' 'ncurses'
+
+        # Check if tput available for colors management
+        if [[ "$?" -eq 0 ]]; then
+            # Check if launched in a terminal
+            if [[ -t 1 ]]; then
+                local color_depth=$(tput colors)
+
+                # Check color depth
+                if [[ "$color_depth" -ge 8 ]] 2>/dev/null; then
+                    print_verbose 3 'color support turned on'
+                    ENABLE_COLORS='true'
+
+                    if [[ "$color_depth" -lt 256 ]] 2>/dev/null; then
+                        print_verbose 2 'color depth less than 256 (using 8)'
+                    fi
+                else
+                    print_verbose 2 'color depth less than 8, color disabled'
+                fi
+            else # Not run in a terminal, turn off color support
+                print_verbose 2 'not run in a terminal, color disbaled'
+            fi
+        else # tput not vailable, turn off color support
+            print_verbose 2 'colors support turned off'
+        fi
+    }
+
+    ############################################################################
     # Print text with colors if colors are enables.                            #
     # Args:                                                                    #
     #      -$1: Input text.                                                    #
@@ -233,6 +272,9 @@
             local black="$normal"
             local red="$normal"
             local green="$normal"
+            local grey1="$normal"
+            local grey2="$normal"
+            local grey3="$normal"
             local yellow="$normal"
             local blue="$normal"
             local magenta="$normal"
@@ -248,9 +290,15 @@
             if [[ $(tput colors) -ge 256 ]] 2>/dev/null; then
                 yellow='$(tput setaf 190)'
                 orange='$(tput setaf 172)'
+                grey1='$(tput setaf 240)'
+                grey2='$(tput setaf 239)'
+                grey3='$(tput setaf 238)'
             else
                 yellow='$(tput setaf 3)'
                 orange='$(tput setaf 3)'
+                grey1='$(tput setaf 0)'
+                grey2='$(tput setaf 0)'
+                grey3='$(tput setaf 0)'
             fi
 
             black='$(tput setaf 0)'
@@ -289,11 +337,11 @@
             eval "msg=\"${ERRORS[${error_code}]}\""
 
             # Print the error message
-            print_colors "<red><b>Error:</b></red> <red>$msg</red>\n" 1>&2
-
-            # Return the corresponding error code
+            print_colors '<red><b>Error:</b> </red>' 1>&2
+            print_colors "<red>$msg</red>\n"         1>&2
         fi
 
+        # Return the corresponding error code
         return "-$error_code"
     }
 
@@ -313,16 +361,17 @@
             eval "msg=\"${WARNINGS[${warning_code}]}\""
 
             # Print the warning message
-            print_colors "<orange><b>Warning:</b></orange> <orange>$msg</orange>\n"
-                                                                           1>&2
+            print_colors '<orange><b>Warning:</b> </orange>' 1>&2
+            print_colors "<orange>$msg</orange>\n"           1>&2
         fi
     }
 
     ############################################################################
     # Print info in stdout.                                                    #
     # Args:                                                                    #
-    #      -$1: Warning code.                                                  #
-    # Result: print warning.                                                   #
+    #      -$1: message to print.                                              #
+    #      -$*: printf arguments.                                              #
+    # Result: print info message.                                              #
     print_info()
     {
         # Check if output is not muted
@@ -333,8 +382,44 @@
             # Shift arguments
             shift
 
-            # Print the warning message
-            print_colors "<yellow><b>Info:</b></yellow> <yellow>$msg</yellow>\n" $*
+            # Print the message
+            print_colors '<yellow><b>Info:</b> </yellow>'
+            print_colors "<yellow>$msg</yellow>\n" $*
+        fi
+    }
+
+    ############################################################################
+    # Print verbose info in stdout.                                            #
+    # Args:                                                                    #
+    #      -$1: verbosity (1, 2 or 3).                                         #
+    #      -$2: message to print.                                              #
+    #      -$*: printf arguments.                                              #
+    # Result: print info in verbose mod.                                       #
+    print_verbose()
+    {
+        # Check if output is not muted
+        if [[ -z "$SILENT" ]]; then
+            # Extract argument
+            local level="$1"
+            local msg="$2"
+
+            # Shift arguments
+            shift; shift
+
+            # Check the verbosity level currently set
+            if [[ "$VERBOSE_LEVEL" -ge "$level" ]]; then
+                # Select color
+                local color="white"
+                case "$level" in
+                    1)  color="grey1";;
+                    2)  color="grey2";;
+                    3)  color="grey3";;
+                esac
+
+                # Print the warning message
+                print_colors "<$color><b>Verbose $level:</b> </$color>"
+                print_colors "<$color>$msg</$color>\n" $*
+            fi
         fi
     }
 
@@ -345,7 +430,7 @@
     # Result: print short usage message.                                       #
     usage()
     {
-        print_colors "<b>Usage:</b> "
+        print_colors '<b>Usage:</b> '
         local tmp=$(head -n${SC_HSIZE:-99} "${0}" | grep -e "^#+" |
                    sed -e "s/^#+[ ]*//g" -e "s/#$//g")
 
@@ -387,11 +472,11 @@
     # Result: set global variable IS_ROOT.                                     #
     is_root()
     {
-        if [[ "root" != "$( whoami )" ]]; then
-            IS_ROOT="false"
+        if [[ 'root' != "$( whoami )" ]]; then
+            IS_ROOT='false'
             print_warning 'not_root'
         else
-            IS_ROOT="true"
+            IS_ROOT='true'
         fi
     }
 
@@ -402,19 +487,43 @@
     # Result: check if arguments are allowed and set global variables.         #
     check_arguments()
     {
-        # Translate arguments to short options
+        local delim=''
+
+        # Retireve verbosity arguments first
+        local ttargs=''
         for arg in $*; do
-            local delim=""
             case "$arg" in
-                --colors)          ENABLE_COLORS="true";;
+                -s)                SILENT='true';;
+                --silent)          SILENT='true';;
+                -v)                VERBOSE_LEVEL=1;;
+                -vv)               VERBOSE_LEVEL=2;;
+                -vvv)              VERBOSE_LEVEL=3;;
+                *) [[ "${arg:0:1}" == '-' ]] || delim="\""
+                    ttargs="${ttargs}${delim}${arg}${delim} ";;
+            esac
+        done
+
+        # Retireve color arguments
+        local targs=''
+        for arg in $ttargs; do
+            case "$arg" in
+                --colors)          enable_colors;;
+                --disable-colors)  ENABLE_COLORS='false';;
+                --enable-colors)   enable_colors;;
+                *) [[ "${arg:0:1}" == '-' ]] || delim="\""
+                   targs="${targs}${delim}${arg}${delim} ";;
+            esac
+        done
+
+        # Translate arguments to short options
+        local args=''
+        for arg in $targs; do
+            case "$targ" in
                 --coreset=*)       args="${args}-c $(echo "$arg" |
                                         sed 's/--.*=//g') ";;
-                --disable-colors)  ENABLE_COLORS="false";;
-                --enable-colors)   ENABLE_COLORS="true";;
                 --help)            args="${args}-h ";;
-                --silent)          args="${args}-s ";;
                 --version)         info; exit 0;;
-                *) [[ "${arg:0:1}" == "-" ]] || delim="\""
+                *) [[ "${arg:0:1}" == '-' ]] || delim="\""
                     args="${args}${delim}${arg}${delim} ";;
             esac
         done
@@ -423,7 +532,7 @@
         eval set -- $args
 
         # Available options
-        local options="c:hs"
+        local options='c:h'
 
         # Desactivate error handling by getops
         OPTERR=0
@@ -433,7 +542,6 @@
             case "$OPT" in
                 c)  CORESET=$OPTARG;;
                 h)  usage_full; exit 0;;
-                s)  SILENT="true";;
                 \?) print_error $EINVOPT; usage; return $EINVOPT;;
             esac
         done
@@ -468,6 +576,8 @@
             return $?
         }
 
+        print_verbose 3 "command %s available" "$cmd"
+
         return $OK
     }
 
@@ -485,11 +595,6 @@
 
         # Check taskset for processes migration
         check_cmd 'taskset' 'taskset' || res=$?
-
-        # Check tput for colors management
-        if [[ "$ENABLE_COLORS" == 'true' ]]; then
-            check_cmd 'tput' 'ncurses' || res=$?
-        fi
 
         return $res
     }
@@ -510,7 +615,7 @@
         local pid="$1"
 
         # Retrieve current list of pids
-        local all_pids=$(ps haxo pid,cmd | sed "s/^ *//g" | cut -f1 -d" ")
+        local all_pids=$(ps haxo pid,cmd | sed 's/^ *//g' | cut -f1 -d' ')
 
         # Check if pid is in the list
         echo -e "$all_pids" | grep -o "^$pid$" > /dev/null 2>&1
@@ -531,24 +636,32 @@
     }
 
     ############################################################################
-    # Refresh list of PIDs.                                                     #
+    # Refresh list of PIDs.                                                    #
     # Args:                                                                    #
     #       None                                                               #
     # Result: remove from the list PIDs which are not active anymore.          #
     pids_refresh()
     {
         if [[ -n "$PIDS" ]]; then
-            local pids=""
+            local pids=''
 
             for i in $PIDS; do
                 # Check if the process is still active
-
                 pid_is_active "$i"
                 if [[ "$?" -eq 0 ]]; then
                     pids="$pids $i"
                 else
+                    # Clean affinity entry
                     if [[ -n "${AFFINITIES[$i]}" ]]; then
-                        unset ${AFFINITIES[$i]}
+                        unset AFFINITIES[$i]
+                    fi
+
+                    print_verbose 2 'PID %d (%s) is not active anymore' "$i" \
+                                  "${PROCESSES[$i]}"
+
+                    # Clean process name entry
+                    if [[ -n "${PROCESSES[$i]}" ]]; then
+                        unset PROCESSES[$i]
                     fi
                 fi
             done
@@ -569,17 +682,26 @@
     pids_retrieve()
     {
         # Check if all PIDs might be migrated
-        if [[ "$IS_ROOT" == "true" ]]; then
+        if [[ "$IS_ROOT" == 'true' ]]; then
             PS=$(ps haxo pid,cmd)
         else
             PS=$(ps hao pid,cmd)
         fi
 
         # Exclude ps process
-        PS=$(echo -e "$PS" | grep -v "ps hao pid,cmd")
+        PS=$(echo -e "$PS" | sed -e 's/^ *//g' -e 's/ +/ /g' |
+             grep -v 'ps hao pid,cmd')
 
         # Get a list of PIDs
-        PIDS=$(echo -e "$PS" | sed "s/^ *//g" | cut -f1 -d" " | xargs)
+        PIDS=$(echo -e "$PS" | cut -f1 -d" " | xargs)
+
+        # Keep track of process names
+        if [[ -n "$PIDS" ]]; then
+            for i in $PIDS; do
+                PROCESSES["$i"]=$(echo -e "$PS" | grep -e "^$i " |
+                                  cut -f2 -d' ')
+            done
+        fi
 
         # Count PIDs
         pids_count
@@ -595,14 +717,8 @@
         local pids=""
         local count=0
 
-        # Check if affinity array has already been declared
-        if [[ -z "$AFFINITIES" ]]; then
-            declare -A AFFINITIES
-        fi
-
         # Check if the list of PIDs is not empty
         if [[ -n "$PIDS" ]]; then
-
             # Check if PID still active and backup affinity
             for i in $PIDS; do
                 local pid=$(taskset -p $i 2>/dev/null)
@@ -629,10 +745,12 @@
     {
         # Migrate all processes in the PIDS list
         for i in $PIDS; do
+            print_verbose 1 'migrating PID %d (%s)' "$i" "${PROCESSES[$i]}"
+
             taskset -a -pc $CORESET $i > /dev/null 2>&1
         done
 
-        print_info "temporarly migrated %d processes on core set %s" \
+        print_info 'temporarly migrated %d processes on core set %s' \
                    $NB_PIDS $CORESET
     }
 
@@ -649,11 +767,14 @@
         # Restore affinity of each PID which is still active
         for i in $PIDS; do
             if [[ -n "${AFFINITIES[$i]}" ]]; then
+                print_verbose 1 'restoring affinity (%s) for PID %d (%s)' \
+                              "${AFFINITIES[$i]}" "$i" "${PROCESSES[$i]}"
+
                 taskset -a -p ${AFFINITIES[$i]} $i > /dev/null 2>&1
             fi
         done
 
-        print_info "restored affinity of %d processes" $NB_PIDS
+        print_info 'restored affinity of %d processes' $NB_PIDS
     }
 
     ############################################################################
