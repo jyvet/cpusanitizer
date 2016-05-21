@@ -44,6 +44,8 @@
 #%    -e, --exclude=<list>             PIDs and process names to ignore.       #
 #%    -h, --help                       Print this help.                        #
 #%    -k, --kernel                     Migrate kernel processes as well.       #
+#%    -r, --refresh=<num>              Refresh rate for active mode to trigger #
+#%                                     a new check (default: {{REFRESH}}s).    #
 #%    -s, --silent                     Do not print anything.                  #
 #%    -v, -vv, -vvv                    Verbosity.                              #
 #%        --version                    Print script information.               #
@@ -73,11 +75,12 @@
 
 ####----[ PARAMETERS ]------------------------------------------------------####
 
-    ENABLE_ACTIVE='false'       # Disable active mode by default
-    ENABLE_COLORS='false'       # Disable colors by default
-    ENABLE_KERNEL='false'       # Disable kernel processes migration by default
-    CORESET='0'                 # Migrate to core 0 by default
-    EXCLUDE='1'                 # Exclude the init process by default
+    ENABLE_ACTIVE='false'      # Disable active mode by default
+    ENABLE_COLORS='false'      # Disable colors by default
+    ENABLE_KERNEL='false'      # Disable kernel processes migration by default
+    CORESET='0'                # Migrate to core 0 by default
+    EXCLUDE='1'                # Exclude the init process by default
+    REFRESH='10'               # Refresh rate for active mode is 10s by default
 
 
 ####----[ GLOBAL VARIABLES ]------------------------------------------------####
@@ -557,6 +560,8 @@
                                         sed 's/--.*=//g') ";;
                 --help)            args="${args}-h ";;
                 --kernel)          args="${args}-k ";;
+                --refresh=*)       args="${args}-r $(echo "$arg" |
+                                        sed 's/--.*=//g') ";;
                 --version)         info; exit 0;;
                 *) [[ "${arg:0:1}" == '-' ]] || delim="\""
                     args="${args}${delim}${arg}${delim} ";;
@@ -567,7 +572,7 @@
         eval set -- $args
 
         # Available options
-        local options='ac:e:hk'
+        local options='ac:e:hkr:'
 
         # Desactivate error handling by getops
         OPTERR=0
@@ -577,12 +582,15 @@
             case "$OPT" in
                 a)  ENABLE_ACTIVE='true'
                     print_verbose 3 'enabling active mode';;
-                c)  CORESET=$OPTARG;;
-                e)  EXCLUDE="$EXCLUDE,$OPTARG";;
+                c)  CORESET="$OPTARG"
+                    print_verbose 3 'coreset defined to %s' "$CORESET";;
+                e)  EXCLUDE="$EXCLUDE,$OPTARG"
+                    print_verbose 3 'exclude list set to %s' "$EXCLUDE";;
                 h)  usage_full; exit 0;;
                 k)  ENABLE_KERNEL='true'
-                    print_verbose 3 'enabling kernel processes migration'
-                    ;;
+                    print_verbose 3 'enabling kernel processes migration';;
+                r)  REFRESH="$OPTARG"
+                    print_verbose 3 'refresh rate set to %ds' "$REFRESH";;
                 \?) print_error $EINVOPT; usage; return $EINVOPT;;
             esac
         done
@@ -734,7 +742,7 @@
                 is_numeric $i
                 if [[ $? == 0 ]]; then
                     exclude="$exclude\|^$i "
-                    print_verbose 2 "exclude PID $i"
+                    print_verbose 2 "excluding PID $i"
                 else
                     exclude="$exclude\|$i"
                     print_verbose 2 "excluding process name '$i'"
@@ -874,7 +882,7 @@
     {
         while :
         do
-            sleep 10
+            sleep $REFRESH
 
             # Check if active mode enabled to search for new processes
             if [[ "$ENABLE_ACTIVE" == 'true' ]]; then
