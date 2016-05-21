@@ -37,6 +37,7 @@
 #%    perturbations.                                                           #
 #%                                                                             #
 #% Options:                                                                    #
+#%    -a, --active                     Periodically check for new processes.   #
 #%    -c, --coreset=<list>             Core set list (default: {{CORESET}}).   #
 #%        --disable-colors             Disable colors.                         #
 #%        --enable-colors, --colors    Enable colors.                          #
@@ -72,6 +73,7 @@
 
 ####----[ PARAMETERS ]------------------------------------------------------####
 
+    ENABLE_ACTIVE='false'       # Disable active mode by default
     ENABLE_COLORS='false'       # Disable colors by default
     ENABLE_KERNEL='false'       # Disable kernel processes migration by default
     CORESET='0'                 # Migrate to core 0 by default
@@ -88,6 +90,7 @@
     readonly SC_PID=$(echo $$)           # Retrieve PID of the script
     declare -A AFFINITIES                # Store coreset affinities
     declare -A PROCESSES                 # Store names of all processes
+    declare -A MIGRATED                  # Keep track of migrated process
 
 
 ####----[ ERRORS ]----------------------------------------------------------####
@@ -527,8 +530,7 @@
                 -v)                VERBOSE_LEVEL=1;;
                 -vv)               VERBOSE_LEVEL=2;;
                 -vvv)              VERBOSE_LEVEL=3;;
-                *) [[ "${arg:0:1}" == '-' ]] || delim="\""
-                    ttargs="${ttargs}${delim}${arg}${delim} ";;
+                *) ttargs="${ttargs} ${arg}";;
             esac
         done
 
@@ -539,15 +541,16 @@
                 --colors)          enable_colors;;
                 --disable-colors)  ENABLE_COLORS='false';;
                 --enable-colors)   enable_colors;;
-                *) [[ "${arg:0:1}" == '-' ]] || delim="\""
-                   targs="${targs}${delim}${arg}${delim} ";;
+                *) targs="${targs} ${arg}";;
             esac
         done
 
         # Translate arguments to short options
         local args=''
         for arg in $targs; do
-            case "$arg" in
+            local delim=''
+            case $arg in
+                --active)          args="${args}-a ";;
                 --coreset=*)       args="${args}-c $(echo "$arg" |
                                         sed 's/--.*=//g') ";;
                 --exclude=*)       args="${args}-e $(echo "$arg" |
@@ -564,7 +567,7 @@
         eval set -- $args
 
         # Available options
-        local options='c:e:hk'
+        local options='ac:e:hk'
 
         # Desactivate error handling by getops
         OPTERR=0
@@ -572,6 +575,8 @@
         # Parse arguments
         while getopts $options OPT; do
             case "$OPT" in
+                a)  ENABLE_ACTIVE='true'
+                    print_verbose 3 'enabling active mode';;
                 c)  CORESET=$OPTARG;;
                 e)  EXCLUDE="$EXCLUDE,$OPTARG";;
                 h)  usage_full; exit 0;;
@@ -711,44 +716,59 @@
     }
 
     ############################################################################
+    # Build exclude command for grep to filter some processes.                 #
+    # Args:                                                                    #
+    #       None                                                               #
+    # Result: set the EXCLUDE_CMD variable.                                    #
+    pids_exclude_cmd()
+    {
+        # Generate only once
+        if [[ -z "$EXCLUDE_CMD" ]]; then
+            # Exclude ps command
+            local exclude='ps ha'
+
+            # Build exclude list from the exclude argument
+            local list=$(echo "$EXCLUDE" | sed 's/,/ /g')
+
+            for i in $list; do
+                is_numeric $i
+                if [[ $? == 0 ]]; then
+                    exclude="$exclude\|^$i "
+                    print_verbose 2 "exclude PID $i"
+                else
+                    exclude="$exclude\|$i"
+                    print_verbose 2 "excluding process name '$i'"
+                fi
+            done
+
+            EXCLUDE_CMD="$exclude"
+        fi
+    }
+
+    ############################################################################
     # Get a list of active PIDs.                                               #
     # Args:                                                                    #
     #       None                                                               #
     # Result: get the list in the PIDS global variable, update count.          #
     pids_retrieve()
     {
-        local exclude=''
-
         # Check if all PIDs should be migrated
         if [[ "$IS_ROOT" == 'true' ]]; then
             if [[ "$ENABLE_KERNEL" == 'true' ]]; then
                 PS=$(ps haxo pid,cmd)
-                exclude='ps haxo pid,cmd'
             else
                 PS=$(ps hao pid,cmd --ppid 2 -p 2 --deselect)
-                exclude='ps hao pid,cmd'
             fi
         else
             PS=$(ps hao pid,cmd)
-            exclude='ps hao pid,cmd'
         fi
 
-        # Build exclude list from exclude argument
-        local tmp=$(echo "$EXCLUDE" | sed 's/,/ /g')
-        for i in $tmp; do
-            is_numeric $i
-            if [[ $? == 0 ]]; then
-                exclude="$exclude\|^$i "
-                print_verbose 2 "exclude PID $i"
-            else
-                exclude="$exclude\|$i"
-                print_verbose 2 "exclude process name '$i'"
-            fi
-        done
+        # Generate exclude command
+        pids_exclude_cmd
 
         # Filter PIDs with the exclude list
         PS=$(echo -e "$PS" | sed -e 's/^ *//g' -e 's/ +/ /g' |
-             grep -v "$exclude")
+             grep -v "$EXCLUDE_CMD")
 
         # Get a list of PIDs
         PIDS=$(echo -e "$PS" | cut -f1 -d" " | xargs)
@@ -772,25 +792,21 @@
     # Result: backup in AFFINITIES global variable and update PIDs list.       #
     pids_backup_affinities()
     {
-        local pids=""
-        local count=0
-
         # Check if the list of PIDs is not empty
         if [[ -n "$PIDS" ]]; then
-            # Check if PID still active and backup affinity
+            # Backup PID affinity
             for i in $PIDS; do
-                local pid=$(taskset -p $i 2>/dev/null)
-                if [[ "$?" -eq 0 ]]; then
-                    AFFINITIES["$i"]=$(echo $pid | sed 's/ //g' | cut -f2 -d':')
-                    pids="$pids $i"
+                if [[ -z "${AFFINITIES["$i"]}" ]]; then
+                    local pid=$(taskset -p $i 2>/dev/null)
+
+                    if [[ "$?" -eq 0 ]]; then
+                        AFFINITIES["$i"]=$(echo $pid | sed 's/ //g' |
+                                           cut -f2 -d':')
+                        print_verbose 2 'backing up affinity for PID %d (%s)' \
+                                      "$i" "${AFFINITIES["$i"]}"
+                    fi
                 fi
             done
-
-            # Remove unaccessible PIDs from the list
-            PIDS="$pids"
-
-            # Count PIDs
-            pids_count
         fi
     }
 
@@ -801,15 +817,29 @@
     # Result: move processes and their threads to core 0.                      #
     pids_migrate()
     {
+        local nb_migrations=0
+
         # Migrate all processes in the PIDS list
         for i in $PIDS; do
-            print_verbose 1 'migrating PID %d (%s)' "$i" "${PROCESSES[$i]}"
+            if [[ ${MIGRATED["$i"]} != 'true' ]]; then
+                print_verbose 1 'migrating PID %d (%s)' "$i" "${PROCESSES[$i]}"
 
-            taskset -a -pc $CORESET $i > /dev/null 2>&1
+                # Migrate process
+                taskset -a -pc $CORESET $i > /dev/null 2>&1
+
+                # Mark as migrated
+                MIGRATED["$i"]='true'
+
+                # Keep track of migrations done in the current function call
+                nb_migrations=$(($nb_migrations + 1))
+            fi
         done
 
-        print_info 'temporarly migrated %d processes on core set %s' \
-                   $NB_PIDS $CORESET
+        # Print summary if at leat one process was migrated
+        if [[ "$nb_migrations" -gt 0 ]]; then
+            print_info 'temporarly migrated %d process(es) on core set %s' \
+                       "$nb_migrations" "$CORESET"
+        fi
     }
 
     ############################################################################
@@ -844,7 +874,17 @@
     {
         while :
         do
-            sleep 100
+            sleep 10
+
+            # Check if active mode enabled to search for new processes
+            if [[ "$ENABLE_ACTIVE" == 'true' ]]; then
+                print_verbose 3 'waking up (active mode)'
+
+                pids_refresh
+                pids_retrieve
+                pids_backup_affinities
+                pids_migrate
+            fi
         done
 
         exit 0
