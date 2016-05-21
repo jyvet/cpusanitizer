@@ -17,3 +17,13 @@ V0.2
 * Add info messages
 * Add new colors
 * Argument to provide CPU core set
+
+
+V0.3
+----
+
+* Check if processes are still active
+* Add silent mode
+* Add verbose mode
+* Argument to provide exclude list of process names / PIDs
+

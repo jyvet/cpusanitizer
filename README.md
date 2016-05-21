@@ -19,13 +19,21 @@ Running CPU Sanitizer
 Examples
 --------
 
+Migrate all processes on core 0:
+
+    sudo cpusan
+
+Migrate processes owned by user on core 0:
+
+    cpusan
+
 Migrate all processes on core 0 and 8:
 
     sudo cpusan -c 0,8
 
-Migrate all processes on core 0:
+Migrate all processes on core 0, except process hpl and PID 42:
 
-    sudo cpusan
+    sudo cpusan -e hpl,42
 
 Use with color support:
 

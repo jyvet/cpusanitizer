@@ -40,18 +40,21 @@
 #%    -c, --coreset=<list>             Core set list (default: {{CORESET}}).   #
 #%        --disable-colors             Disable colors.                         #
 #%        --enable-colors, --colors    Enable colors.                          #
+#%    -e, --exclude=<list>             PIDs and process names to ignore.       #
 #%    -h, --help                       Print this help.                        #
 #%    -s, --silent                     Do not print anything.                  #
 #%    -v, -vv, -vvv                    Verbosity.                              #
 #%        --version                    Print script information.               #
 #%                                                                             #
 #% Examples:                                                                   #
+#%    Use in root to migrate all processes on core {{CORESET}}                 #
+#%    sudo {{SC_NAME}}                                                         #
 #%                                                                             #
 #%    Use in root to migrate all processes on core 0 and 8                     #
 #%    sudo {{SC_NAME}} -c 0,8                                                  #
 #%                                                                             #
-#%    Use in root to migrate all processes on core {{CORESET}}                 #
-#%    sudo {{SC_NAME}}                                                         #
+#%    Migrate all processes on core {{CORESET}}, except process hpl and PID 42 #
+#%    sudo {{SC_NAME}} -e hpl,42                                               #
 #%                                                                             #
 #%    Use with color support                                                   #
 #%    sudo {{SC_NAME}} --colors                                                #
@@ -68,8 +71,9 @@
 
 ####----[ PARAMETERS ]------------------------------------------------------####
 
-    ENABLE_COLORS='false'                # Disable colors by default.
-    CORESET='0'                          # Migrate to core 0 by default.
+    ENABLE_COLORS='false'                # Disable colors by default
+    CORESET='0'                          # Migrate to core 0 by default
+    EXCLUDE='1'                          # Exclude the init process by default
 
 
 ####----[ GLOBAL VARIABLES ]------------------------------------------------####
@@ -87,13 +91,14 @@
 ####----[ ERRORS ]----------------------------------------------------------####
 
     # Generate error codes (emulate enum)
-    ECODES=(OK ERROR EINVOPT ECMD EINVNUM)
+    ECODES=(OK ERROR ENAN EINVOPT ECMD EINVNUM)
     for i in $(seq 0 $((${#ECODES[@]} -1 ))); do
         declare -r ${ECODES[$(($i))]}=$i;
     done
 
     # Register error messages
     ERRORS[$EINVOPT]='invalid option'
+    ERRORS[$ENAN]='not a number'
     ERRORS[$ECMD]='$CMD not found. Please install the $PACKAGE package'
     ERRORS[$EINVNUM]='invalid number of arguments'
 
@@ -106,6 +111,30 @@
 
 
 ####----[ GENERIC FUNCTIONS ]-----------------------------------------------####
+
+    ############################################################################
+    # Check if argument is a number.                                           #
+    # Args:                                                                    #
+    #      -$1: Argument to check.                                             #
+    # Result: return 0 if a number, else -1.                                   #
+    is_numeric()
+    {
+       # Check number of input arguments
+        if [[ "$#" -ne 1 ]]; then
+            print_error $EINVNUM; return $?
+        fi
+
+        # Extract argument
+        local in="$1"
+
+        # Check if a number
+        local regex='^[0-9]+$'
+        if [[ "$in" =~ $regex ]]; then
+            return 0
+        else
+            return -1
+        fi
+    }
 
     ############################################################################
     # Replace tags with content of variables.                                  #
@@ -487,8 +516,6 @@
     # Result: check if arguments are allowed and set global variables.         #
     check_arguments()
     {
-        local delim=''
-
         # Retireve verbosity arguments first
         local ttargs=''
         for arg in $*; do
@@ -518,8 +545,10 @@
         # Translate arguments to short options
         local args=''
         for arg in $targs; do
-            case "$targ" in
+            case "$arg" in
                 --coreset=*)       args="${args}-c $(echo "$arg" |
+                                        sed 's/--.*=//g') ";;
+                --exclude=*)       args="${args}-e $(echo "$arg" |
                                         sed 's/--.*=//g') ";;
                 --help)            args="${args}-h ";;
                 --version)         info; exit 0;;
@@ -532,7 +561,7 @@
         eval set -- $args
 
         # Available options
-        local options='c:h'
+        local options='c:e:h'
 
         # Desactivate error handling by getops
         OPTERR=0
@@ -541,6 +570,7 @@
         while getopts $options OPT; do
             case "$OPT" in
                 c)  CORESET=$OPTARG;;
+                e)  EXCLUDE="$EXCLUDE,$OPTARG";;
                 h)  usage_full; exit 0;;
                 \?) print_error $EINVOPT; usage; return $EINVOPT;;
             esac
@@ -681,16 +711,33 @@
     # Result: get the list in the PIDS global variable, update count.          #
     pids_retrieve()
     {
+        local exclude=''
+
         # Check if all PIDs might be migrated
         if [[ "$IS_ROOT" == 'true' ]]; then
             PS=$(ps haxo pid,cmd)
+            exclude='ps haxo pid,cmd'
         else
             PS=$(ps hao pid,cmd)
+            exclude='ps hao pid,cmd'
         fi
 
-        # Exclude ps process
+        # Build exclude list from exclude argument
+        local tmp=$(echo "$EXCLUDE" | sed 's/,/ /g')
+        for i in $tmp; do
+            is_numeric $i
+            if [[ $? == 0 ]]; then
+                exclude="$exclude\|^$i "
+                print_verbose 2 "exclude PID $i"
+            else
+                exclude="$exclude\|$i"
+                print_verbose 2 "exclude process name '$i'"
+            fi
+        done
+
+        # Filter PIDs with the exclude list
         PS=$(echo -e "$PS" | sed -e 's/^ *//g' -e 's/ +/ /g' |
-             grep -v 'ps hao pid,cmd')
+             grep -v "$exclude")
 
         # Get a list of PIDs
         PIDS=$(echo -e "$PS" | cut -f1 -d" " | xargs)
