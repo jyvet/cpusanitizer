@@ -42,6 +42,7 @@
 #%        --enable-colors, --colors    Enable colors.                          #
 #%    -e, --exclude=<list>             PIDs and process names to ignore.       #
 #%    -h, --help                       Print this help.                        #
+#%    -k, --kernel                     Migrate kernel processes as well.       #
 #%    -s, --silent                     Do not print anything.                  #
 #%    -v, -vv, -vvv                    Verbosity.                              #
 #%        --version                    Print script information.               #
@@ -71,9 +72,10 @@
 
 ####----[ PARAMETERS ]------------------------------------------------------####
 
-    ENABLE_COLORS='false'                # Disable colors by default
-    CORESET='0'                          # Migrate to core 0 by default
-    EXCLUDE='1'                          # Exclude the init process by default
+    ENABLE_COLORS='false'       # Disable colors by default
+    ENABLE_KERNEL='false'       # Disable kernel processes migration by default
+    CORESET='0'                 # Migrate to core 0 by default
+    EXCLUDE='1'                 # Exclude the init process by default
 
 
 ####----[ GLOBAL VARIABLES ]------------------------------------------------####
@@ -551,6 +553,7 @@
                 --exclude=*)       args="${args}-e $(echo "$arg" |
                                         sed 's/--.*=//g') ";;
                 --help)            args="${args}-h ";;
+                --kernel)          args="${args}-k ";;
                 --version)         info; exit 0;;
                 *) [[ "${arg:0:1}" == '-' ]] || delim="\""
                     args="${args}${delim}${arg}${delim} ";;
@@ -561,7 +564,7 @@
         eval set -- $args
 
         # Available options
-        local options='c:e:h'
+        local options='c:e:hk'
 
         # Desactivate error handling by getops
         OPTERR=0
@@ -572,6 +575,9 @@
                 c)  CORESET=$OPTARG;;
                 e)  EXCLUDE="$EXCLUDE,$OPTARG";;
                 h)  usage_full; exit 0;;
+                k)  ENABLE_KERNEL='true'
+                    print_verbose 3 'enabling kernel processes migration'
+                    ;;
                 \?) print_error $EINVOPT; usage; return $EINVOPT;;
             esac
         done
@@ -713,10 +719,15 @@
     {
         local exclude=''
 
-        # Check if all PIDs might be migrated
+        # Check if all PIDs should be migrated
         if [[ "$IS_ROOT" == 'true' ]]; then
-            PS=$(ps haxo pid,cmd)
-            exclude='ps haxo pid,cmd'
+            if [[ "$ENABLE_KERNEL" == 'true' ]]; then
+                PS=$(ps haxo pid,cmd)
+                exclude='ps haxo pid,cmd'
+            else
+                PS=$(ps hao pid,cmd --ppid 2 -p 2 --deselect)
+                exclude='ps hao pid,cmd'
+            fi
         else
             PS=$(ps hao pid,cmd)
             exclude='ps hao pid,cmd'
