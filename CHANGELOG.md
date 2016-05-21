@@ -27,3 +27,11 @@ V0.3
 * Add verbose mode
 * Argument to provide exclude list of process names / PIDs
 
+
+V0.4
+----
+
+* Argument to choose to migrate kernel processes
+* Add active mode (periodically check for new processes)
+* Argument to change active mode refresh rate
+* Alias to combine kernel processes migration and active mode

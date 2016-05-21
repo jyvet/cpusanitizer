@@ -38,6 +38,7 @@
 #%                                                                             #
 #% Options:                                                                    #
 #%    -a, --active                     Periodically check for new processes.   #
+#%        --all                        Alias for -a -k --colors.               #
 #%    -c, --coreset=<list>             Core set list (default: {{CORESET}}).   #
 #%        --disable-colors             Disable colors.                         #
 #%        --enable-colors, --colors    Enable colors.                          #
@@ -65,7 +66,7 @@
 #%                                                                             #
 ####----[ INFORMATION ]-----------------------------------------------------####
 #% Implementation:                                                             #
-#-    version         0.3                                                      #
+#-    version         0.4                                                      #
 #-    url             https://github.com/jyvet/cpusanitizer                    #
 #-    author          Jean-Yves VET <contact[at]jean-yves.vet>                 #
 #-    copyright       Copyright (c) 2016                                       #
@@ -554,6 +555,7 @@
             local delim=''
             case $arg in
                 --active)          args="${args}-a ";;
+                --all)             args="${args}-a -k  "; enable_colors;;
                 --coreset=*)       args="${args}-c $(echo "$arg" |
                                         sed 's/--.*=//g') ";;
                 --exclude=*)       args="${args}-e $(echo "$arg" |
